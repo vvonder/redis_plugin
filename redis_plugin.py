@@ -14,7 +14,8 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
 #
-# Author: 
+# Author:
+#     vvonder <g.liwentao at gmail.com >
 #     Lior Goikhburg <goikhburg at gmail.com >
 #
 # Description:
@@ -50,24 +51,25 @@ NAME = 'redis'
 # map of collectd data sets to lists of data sources as defined in redis_types.db
 INFO_STATS_MAP = {
     'clients': ['connected_clients', 'blocked_clients'],
-    'connected_slaves': ['connected_slaves'],
-    'redis_connections': ['rejected_connections', 'total_connections_received'],
-    'redis_keys': ['expired_keys', 'evicted_keys'],
-    'keyspace': ['keyspace_misses', 'keyspace_hits'],
-    'last_save': ['rdb_last_bgsave_time_sec', 'aof_last_rewrite_time_sec', 'rdb_changes_since_last_save'],
+    # 'connected_slaves': ['connected_slaves'],
+    # 'redis_connections': ['rejected_connections', 'total_connections_received'],
+    # 'redis_keys': ['expired_keys', 'evicted_keys'],
+    # 'keyspace': ['keyspace_misses', 'keyspace_hits'],
+    # 'last_save': ['rdb_last_bgsave_time_sec', 'aof_last_rewrite_time_sec', 'rdb_changes_since_last_save'],
     'redis_memory': ['used_memory', 'used_memory_lua', 'used_memory_peak',
                      'used_memory_rss', 'mem_fragmentation_ratio'],
     'commands_per_sec': ['instantaneous_ops_per_sec'],
-    'pubsub': ['pubsub_channels', 'pubsub_patterns'],
-    'uptime_in_seconds': ['uptime_in_seconds'],
-    'cpu_used': ['used_cpu_user_children', 'used_cpu_sys', 'used_cpu_sys_children', 'used_cpu_user'],
+    # 'pubsub': ['pubsub_channels', 'pubsub_patterns'],
+    # 'uptime_in_seconds': ['uptime_in_seconds'],
+    # 'cpu_used': ['used_cpu_user_children', 'used_cpu_sys', 'used_cpu_sys_children', 'used_cpu_user'],
     'expires': ['expires'],
     'total': ['keys'],
-    'avg_ttl': ['avg_ttl'],
+    # 'avg_ttl': ['avg_ttl'],
     'calls': ['calls'],
     'usec_per_call': ['usec_per_call']}
 
 METRIC_DELIM = '.'
+
 
 def logger(level, message):
     if level == 'err':
@@ -80,18 +82,23 @@ def logger(level, message):
     else:
         collectd.notice("%s: %s" % (NAME, message))
 
+
 class RedisError(Exception):
     pass
+
 
 class ServerError(Exception):
     pass
 
+
 class RedisSocket(object):
-    def __init__(self, socket_file=None, ip=None, port=None, auth=None):
+
+    def __init__(self, socket_file=None, ip=None, port=None, auth=None, timeout=None):
         self.socket_file = socket_file
         self.ip = ip
         self.port = port
         self.auth = auth
+        self.timeout = timeout
         self._socket = None
         self._handler = None
         self.endpoint = ''
@@ -104,13 +111,17 @@ class RedisSocket(object):
 
         try:
             if self.ip:
-                self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self._socket.connect((self.ip, self.port))
                 self.endpoint = "%s:%s" % (self.ip, self.port)
+                self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                if self.timeout:
+                    self._socket.settimeout(self.timeout)
+                self._socket.connect((self.ip, self.port))
             elif self.socket_file:
-                self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                self._socket.connect(self.socket_file)
                 self.endpoint = self.socket_file
+                self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                if self.timeout:
+                    self._socket.settimeout(self.timeout)
+                self._socket.connect(self.socket_file)
             self._handler = self._socket.makefile()
 
         except socket.error as error:
@@ -258,7 +269,8 @@ def get_stats(config_data):
     redis = RedisSocket(socket_file=config_data['REDIS_SOCKET'],
                         ip=config_data['REDIS_IP'],
                         port=config_data['REDIS_PORT'],
-                        auth=config_data['REDIS_AUTH'])
+                        auth=config_data['REDIS_AUTH'],
+                        timeout=config_data['REDIS_TIMEOUT'])
 
     data = ''
     collectd_stats = {}
@@ -306,6 +318,8 @@ def get_instance_config(config_child):
         'REDIS_IP': '127.0.0.1',
         'REDIS_PORT': 6379,
         'REDIS_AUTH': None,
+        'REDIS_TIMEOUT': 0.1,
+        'INTERVAL': 0,
         'COMMANDSTATS': False,
         'VERBOSE_LOGGING': False}
 
@@ -322,6 +336,10 @@ def get_instance_config(config_child):
             instance_config['REDIS_SOCKET'] = None
         elif node.key == "Auth":
             instance_config['REDIS_AUTH'] = node.values[0]
+        elif node.key == "Timeout":
+            instance_config['REDIS_TIMEOUT'] = float(node.values[0])
+        elif node.key == "Interval":
+            instance_config['INTERVAL'] = int(node.values[0])
         elif node.key == "Commandstats":
             instance_config['COMMANDSTATS'] = bool(node.values[0])
         elif node.key == "Verbose":
@@ -333,14 +351,14 @@ def get_instance_config(config_child):
     return instance_config
 
 
+CONFIG_INSTANCES = {}
+
+
 def configure_callback(conf):
     """
     process config provided by collectd config callback, handles instances
     and root configs
     """
-
-    global CONFIG_INSTANCES
-    CONFIG_INSTANCES = {}
 
     for node in conf.children:
         if node.children:
@@ -355,30 +373,22 @@ def configure_callback(conf):
             CONFIG_INSTANCES['root_config'] = get_instance_config(conf)
 
 
-def read_callback():
-    """ read callback gathers data and dispatches values to collectd """
+def gen_read_callback(name):
+    def read_callback():
+        instance_name = name
+        instance_config = CONFIG_INSTANCES[instance_name]
+        instance_data = get_stats(instance_config)
 
-    logger('verb', "beginning read_callback")
-
-    collectd_stats = {}
-    for instance_name, instance_config in CONFIG_INSTANCES.iteritems():
         if instance_name == 'root_config':
-            if len(CONFIG_INSTANCES) == 1:
-                collectd_stats['root'] = get_stats(instance_config)
-                if not collectd_stats['instance']:
-                    logger('err', 'No data received from Redis')
-        else:
-            collectd_stats[instance_name] = get_stats(instance_config)
-            if not collectd_stats[instance_name]:
-                logger('warn', "No data received from redis instance %s" % (instance_name))
+            instance_name = 'root'
 
-    for instance_name, instance_data in collectd_stats.iteritems():
+        logger('verb', "beginning read_callback %s" % name)
         for section_name, data_sets in instance_data.iteritems():
             for data_set, values in data_sets.iteritems():
                 metric_prefix = NAME
                 if instance_name != 'root':
                     metric_prefix = METRIC_DELIM.join([metric_prefix, instance_name])
-                metric_prefix = METRIC_DELIM.join([metric_prefix, section_name]) 
+                metric_prefix = METRIC_DELIM.join([metric_prefix, section_name])
 
                 logger('verb', "dispatching values - plugin_name: %s, type: %s, values: %s" % (
                     metric_prefix, data_set, ", ".join([str(i) for i in values])))
@@ -386,7 +396,16 @@ def read_callback():
                 val = collectd.Values(plugin=metric_prefix.lower(), type=data_set)
                 val.values = values
                 val.dispatch()
+    return read_callback
+
+
+def init_callback():
+    for name, conf in CONFIG_INSTANCES.iteritems():
+        if name == 'root_config':
+            if len(CONFIG_INSTANCES) > 1:
+                continue
+        collectd.register_read(gen_read_callback(name), interval=conf['INTERVAL'], name=name)
 
 # register collectd plugins
 collectd.register_config(configure_callback)
-collectd.register_read(read_callback)
+collectd.register_init(init_callback)
