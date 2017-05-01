@@ -3,6 +3,11 @@ redis_plugin
 
 This is a collectd (<http://collectd.org/>) plugin which runs under the Python plugin (<https://collectd.org/wiki/index.php/Plugin:Python>) to collect metrics from redis (<http://redis.io/>).
 
+This modifiy version from (<https://github.com/zerthimon/redis_plugin>) plugin include some new features:
+* Socket timeout support for each instants.
+* Interval options for each instants.
+* Parallel running readers for multiple instants.
+
 Requirements:
 ------------
 
@@ -30,6 +35,12 @@ Options:
 * `Auth`  
    Password to use when connecting to Redis instance.  
    Default: none  
+* `Timeout`  
+   Socket Timeout seconds to use when connecting to Redis instance.  
+   Default: 0.1  
+* `Interval`  
+   Read Interval seconds for each plguin instants, default to use Interval config of collectd.  
+   Default: 0  
 * `Commandstats`  
    Include Redis command statistics, from "INFO COMMANDSTATS" command.  
    Default: false  
@@ -65,7 +76,8 @@ Multi-instance Plugin Config Example:
     TypesDB "/usr/share/collectd/redis_types.db"`
 
     <LoadPlugin python>
-        Globals true
+        #Globals true
+        Interval 1
     </LoadPlugin>
 
     <Plugin python>
@@ -84,6 +96,8 @@ Multi-instance Plugin Config Example:
               Port 6379
               Auth "foobared"
               Commandstats true
+              # Interval 5
+              # Timeout 0.5
           </Instance>
           Verbose false
         </Module>
